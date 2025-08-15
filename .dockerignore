@@ -25,6 +25,7 @@ gemini-antiblock
 test/
 tests/
 coverage.out
+mock-server/
 
 # IDE和编辑器文件
 .vscode/

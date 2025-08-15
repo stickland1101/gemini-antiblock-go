@@ -176,13 +176,22 @@ gemini-antiblock-go/
 │   └── logger.go          # 日志记录
 ├── handlers/
 │   ├── errors.go          # 错误处理和CORS
+│   ├── health.go          # 健康检查
 │   └── proxy.go           # 代理处理逻辑
 ├── streaming/
 │   ├── sse.go             # SSE流处理
 │   └── retry.go           # 重试逻辑
+├── mock-server/           # 测试模拟服务器
+│   ├── main.go            # 模拟服务器入口
+│   ├── go.mod             # 模拟服务器依赖
+│   └── README.md          # 模拟服务器文档
 ├── go.mod                 # Go模块文件
 ├── go.sum                 # 依赖校验和
 ├── .env.example           # 环境变量示例
+├── Dockerfile             # Docker构建文件
+├── docker-compose.yml     # Docker Compose配置
+├── DEPLOYMENT.md          # 部署文档
+├── LICENSE                # 许可证文件
 └── README.md              # 项目文档
 ```
 
@@ -209,6 +218,70 @@ gemini-antiblock-go/
 - **DEBUG**: 详细的调试信息（仅在调试模式下显示）
 - **INFO**: 一般信息和操作状态
 - **ERROR**: 错误信息和异常
+
+## 测试和开发
+
+### Mock Server
+
+项目包含一个用于测试的模拟服务器（`mock-server/`），提供多种测试场景来验证代理服务器的行为：
+
+#### 功能特性
+
+- **多种测试用例**: 支持 3 种不同的测试场景
+- **路径路由**: 使用 `/type-1`, `/type-2`, `/type-3` 路径来区分测试用例
+- **随机延迟**: 模拟真实 API 的响应延迟（50-200ms）
+- **流式响应**: 支持 Server-Sent Events (SSE)格式
+- **思考内容**: 模拟包含思考过程的响应
+- **标准响应格式**: 包含 `finishReason: "STOP"` 参数
+
+#### 测试用例
+
+| 测试用例 | 路径      | 描述                                      | 用途                   |
+| -------- | --------- | ----------------------------------------- | ---------------------- |
+| 1        | `/type-1` | 包含思考内容，但不返回 `[done]` 标记      | 测试处理不完整流的能力 |
+| 2        | `/type-2` | 将 `[done]` 标记分割发送（`[do` + `ne]`） | 测试处理分割标记的能力 |
+| 3        | `/type-3` | 返回空响应                                | 测试处理空响应的能力   |
+
+#### 使用方法
+
+1. **启动模拟服务器**：
+
+   ```bash
+   cd mock-server
+   go run main.go
+   ```
+
+   服务器将在端口 8081 启动。
+
+2. **直接测试**：
+
+   ```bash
+   # 测试用例 1
+   curl -X POST "http://localhost:8081/type-1/v1beta/models/gemini-pro:streamGenerateContent" \
+     -H "Content-Type: application/json" \
+     -d '{"contents": [{"parts": [{"text": "Hello"}]}]}'
+   ```
+
+3. **与代理服务器配合测试**：
+
+   ```bash
+   # 配置代理指向不同测试用例
+   UPSTREAM_URL_BASE=http://localhost:8081/type-1 go run main.go  # 测试用例1
+   UPSTREAM_URL_BASE=http://localhost:8081/type-2 go run main.go  # 测试用例2
+   UPSTREAM_URL_BASE=http://localhost:8081/type-3 go run main.go  # 测试用例3
+
+   # 然后通过代理发送请求
+   curl -X POST "http://localhost:8080/v1beta/models/gemini-pro:streamGenerateContent" \
+     -H "Content-Type: application/json" \
+     -d '{"contents": [{"parts": [{"text": "Test message"}]}]}'
+   ```
+
+4. **健康检查**：
+   ```bash
+   curl http://localhost:8081/health
+   ```
+
+详细的使用说明请参考 [`mock-server/README.md`](mock-server/README.md)。
 
 ## Docker 部署
 
