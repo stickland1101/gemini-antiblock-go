@@ -24,11 +24,11 @@ type Config struct {
 func LoadConfig() *Config {
 	return &Config{
 		UpstreamURLBase:            getEnvString("UPSTREAM_URL_BASE", "https://generativelanguage.googleapis.com"),
-		MaxConsecutiveRetries:      getEnvInt("MAX_CONSECUTIVE_RETRIES", 100),
+		Port:                       getEnvString("PORT", "8080"),
 		DebugMode:                  getEnvBool("DEBUG_MODE", true),
+		MaxConsecutiveRetries:      getEnvInt("MAX_CONSECUTIVE_RETRIES", 100),
 		RetryDelayMs:               time.Duration(getEnvInt("RETRY_DELAY_MS", 750)) * time.Millisecond,
 		SwallowThoughtsAfterRetry:  getEnvBool("SWALLOW_THOUGHTS_AFTER_RETRY", true),
-		Port:                       getEnvString("PORT", "8080"),
 		EnableRateLimit:            getEnvBool("ENABLE_RATE_LIMIT", false),
 		RateLimitCount:             getEnvInt("RATE_LIMIT_COUNT", 10),
 		RateLimitWindowSeconds:     getEnvInt("RATE_LIMIT_WINDOW_SECONDS", 60),
