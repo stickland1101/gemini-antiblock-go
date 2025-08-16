@@ -32,7 +32,7 @@ func (l *RateLimiter) Wait(apiKey string) {
 		cutoff := now.Add(-l.window)
 
 		// Get timestamps for the current key, cleaning up old ones.
-		timestamps, _ := l.clients[apiKey]
+		timestamps := l.clients[apiKey]
 		firstValidIndex := 0
 		for i, ts := range timestamps {
 			if !ts.Before(cutoff) {
