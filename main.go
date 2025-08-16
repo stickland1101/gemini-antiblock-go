@@ -40,6 +40,15 @@ func main() {
 	rateLimiter := handlers.NewRateLimiter(cfg.RateLimitCount, rateLimitWindow)
 	if cfg.EnableRateLimit {
 		logger.LogInfo(fmt.Sprintf("Rate limiting enabled: %d requests per %v per key", cfg.RateLimitCount, rateLimitWindow))
+	} else {
+		logger.LogInfo("Rate limiting disabled")
+	}
+
+	// Display punctuation heuristic configuration
+	if cfg.EnablePunctuationHeuristic {
+		logger.LogInfo("Punctuation heuristic enabled: Will terminate retry attempts after 3 consecutive endings with punctuation")
+	} else {
+		logger.LogInfo("Punctuation heuristic disabled")
 	}
 
 	// Create proxy handler

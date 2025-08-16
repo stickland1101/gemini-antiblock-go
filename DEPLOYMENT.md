@@ -14,7 +14,7 @@ docker pull ghcr.io/davidasx/gemini-antiblock-go:latest
 docker run -d \
   --name gemini-antiblock \
   -p 8080:8080 \
-  -e DEBUG_MODE=true \
+  -e DEBUG_MODE=false \
   ghcr.io/davidasx/gemini-antiblock-go:latest
 ```
 
@@ -217,7 +217,7 @@ docker logs --tail 100 gemini-antiblock
 
 ### 健康检查
 
-容器基于Alpine Linux构建，支持内置健康检查：
+容器基于 Alpine Linux 构建，支持内置健康检查：
 
 ```bash
 # 查看健康状态
@@ -230,7 +230,8 @@ docker inspect --format='{{json .State.Health}}' gemini-antiblock
 docker exec gemini-antiblock curl -f http://localhost:8080/
 ```
 
-**Kubernetes健康检查配置**:
+**Kubernetes 健康检查配置**:
+
 ```yaml
 livenessProbe:
   httpGet:
@@ -299,7 +300,7 @@ curl -f http://localhost:8080/ || echo "Service is down"
 docker run -d \
   --name gemini-antiblock \
   -p 8080:8080 \
-  -e DEBUG_MODE=true \
+  -e DEBUG_MODE=false \
   ghcr.io/davidasx/gemini-antiblock-go:latest
 ```
 

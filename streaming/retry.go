@@ -18,6 +18,19 @@ var nonRetryableStatuses = map[int]bool{
 	400: true, 401: true, 403: true, 404: true, 429: true,
 }
 
+// endsWithSentencePunctuation returns true if the given text ends with a sentence-ending punctuation.
+// The set includes common Chinese and English sentence terminators and closing quotes.
+func endsWithSentencePunctuation(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) == 0 {
+		return false
+	}
+	runes := []rune(trimmed)
+	last := runes[len(runes)-1]
+	const punctuations = "。？！.!?…\"'”’"
+	return strings.ContainsRune(punctuations, last)
+}
+
 // BuildRetryRequestBody builds a new request body for retry with accumulated context
 func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText string) map[string]interface{} {
 	logger.LogDebug(fmt.Sprintf("Building retry request body. Accumulated text length: %d", len(accumulatedText)))
@@ -93,7 +106,8 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 
 	isOutputtingFormalText := false
 	swallowModeActive := false
-	consecutivePunctuationEndCount := 0
+	// Counts consecutive resume attempts (after at least one retry) whose last formal text ends with sentence punctuation
+	resumePunctStreak := 0
 
 	// Get maxOutputTokens from client request, with a default fallback
 	maxOutputChars := 65535 // Default value
@@ -118,6 +132,11 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 		// Create channel for SSE lines
 		lineCh := make(chan string, 100)
 		go SSELineIterator(currentReader, lineCh)
+
+		// Track the last formal text chunk seen in this attempt
+		attemptLastFormalText := ""
+		attemptLastFormalDataLine := ""
+		attemptLastFormalTextFlushed := false
 
 		// Process lines
 		for line := range lineCh {
@@ -150,32 +169,13 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 				}
 			}
 
-			// Heuristic check for 3 consecutive punctuation ends
-			if !isThought && textChunk != "" {
-				trimmedChunk := strings.TrimSpace(textChunk)
-				if len(trimmedChunk) > 0 {
-					const punctuations = "。？！.\"?'”’"
-					lastChar := string([]rune(trimmedChunk)[len([]rune(trimmedChunk))-1])
-
-					if strings.Contains(punctuations, lastChar) {
-						consecutivePunctuationEndCount++
-						logger.LogDebug(fmt.Sprintf("Chunk ended with punctuation. Consecutive count: %d", consecutivePunctuationEndCount))
-					} else {
-						consecutivePunctuationEndCount = 0
-					}
-				} else {
-					consecutivePunctuationEndCount = 0
-				}
-			} else {
-				// Reset if it's a thought or an empty text chunk
-				consecutivePunctuationEndCount = 0
-			}
-
-			if consecutivePunctuationEndCount >= 3 {
-				logger.LogInfo("Stream ending due to 3 consecutive chunks ending with punctuation.")
-				// The current line has already been written, so we just break
-				cleanExit = true
-				break
+			// Record the last formal text chunk for this attempt as early as possible,
+			// so even if this line triggers a retry (e.g., STOP but considered incomplete),
+			// it is still considered in cross-attempt punctuation heuristic.
+			if textChunk != "" && !isThought {
+				attemptLastFormalText = textChunk
+				attemptLastFormalDataLine = line
+				attemptLastFormalTextFlushed = false
 			}
 
 			// Retry decision logic
@@ -233,6 +233,7 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 				isOutputtingFormalText = true
 				accumulatedText += textChunk
 				textInThisStream += textChunk
+				attemptLastFormalTextFlushed = true
 			}
 
 			// Check for total output character limit
@@ -260,6 +261,44 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 		logger.LogDebug(fmt.Sprintf("  Lines processed: %d", linesInThisStream))
 		logger.LogDebug(fmt.Sprintf("  Text generated this stream: %d chars", len(textInThisStream)))
 		logger.LogDebug(fmt.Sprintf("  Total accumulated text: %d chars", len(accumulatedText)))
+
+		// Cross-attempt heuristic (optional): if we are in a resumed attempt (after at least one retry)
+		// and the last formal text of this attempt ends with sentence punctuation, count streak.
+		// If we reach 3 such consecutive resume attempts, treat as success and finish.
+		if cfg.EnablePunctuationHeuristic && !cleanExit && consecutiveRetryCount > 0 {
+			if attemptLastFormalText != "" && endsWithSentencePunctuation(attemptLastFormalText) {
+				resumePunctStreak++
+				logger.LogInfo(fmt.Sprintf("Resume punctuation streak incremented to %d (last formal text ends with sentence punctuation)", resumePunctStreak))
+			} else {
+				if attemptLastFormalText == "" {
+					logger.LogDebug("No formal text in this attempt; resetting resume punctuation streak to 0")
+				} else {
+					logger.LogDebug("Last formal text does not end with sentence punctuation; resetting resume punctuation streak to 0")
+				}
+				resumePunctStreak = 0
+			}
+
+			if resumePunctStreak >= 3 {
+				logger.LogInfo("Treating stream as successful due to 3 consecutive resume attempts ending with sentence punctuation.")
+				// If the last formal text of this attempt was not flushed due to early interruption,
+				// flush it now so the client receives the most recent block.
+				if !attemptLastFormalTextFlushed && attemptLastFormalDataLine != "" {
+					isEnd := ExtractFinishReason(attemptLastFormalDataLine)
+					shouldRemove := isEnd == "STOP" || isEnd == "MAX_TOKENS"
+					processed := RemoveDoneTokenFromLine(attemptLastFormalDataLine, shouldRemove)
+					if _, err := writer.Write([]byte(processed + "\n\n")); err == nil {
+						if flusher, ok := writer.(http.Flusher); ok {
+							flusher.Flush()
+						}
+						// Keep accounting consistent
+						accumulatedText += attemptLastFormalText
+						textInThisStream += attemptLastFormalText
+						isOutputtingFormalText = true
+					}
+				}
+				cleanExit = true
+			}
+		}
 
 		if cleanExit {
 			sessionDuration := time.Since(sessionStartTime)
@@ -315,7 +354,7 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 
 		// Build retry request
 		retryBody := BuildRetryRequestBody(originalRequestBody, accumulatedText)
-		
+
 		// Log the retry request body for debugging
 		prettyBodyBytes, _ := json.MarshalIndent(retryBody, "  ", "  ")
 		f, err := os.OpenFile("debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)

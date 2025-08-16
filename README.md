@@ -28,7 +28,7 @@ docker run -d \
   -p 8080:8080 \
   -e UPSTREAM_URL_BASE=https://generativelanguage.googleapis.com \
   -e MAX_CONSECUTIVE_RETRIES=100 \
-  -e DEBUG_MODE=true \
+  -e DEBUG_MODE=false \
   -e RETRY_DELAY_MS=750 \
   -e SWALLOW_THOUGHTS_AFTER_RETRY=true \
   ghcr.io/davidasx/gemini-antiblock-go:latest
@@ -58,7 +58,7 @@ docker build -t gemini-antiblock-go .
 docker run -d \
   --name gemini-antiblock \
   -p 8080:8080 \
-  -e DEBUG_MODE=true \
+  -e DEBUG_MODE=false \
   gemini-antiblock-go
 ```
 
@@ -92,7 +92,7 @@ UPSTREAM_URL_BASE=https://generativelanguage.googleapis.com
 MAX_CONSECUTIVE_RETRIES=100
 
 # 启用调试模式
-DEBUG_MODE=true
+DEBUG_MODE=false
 
 # 重试延迟（毫秒）
 RETRY_DELAY_MS=750
@@ -102,6 +102,16 @@ SWALLOW_THOUGHTS_AFTER_RETRY=true
 
 # 服务器端口
 PORT=8080
+
+# 速率限制
+ENABLE_RATE_LIMIT=false
+# 速率限制窗口时间（秒）
+RATE_LIMIT_WINDOW_SECONDS=60
+# 速率限制请求数
+RATE_LIMIT_COUNT=10
+
+# 是否启用实验性的“跨尝试句末标点”启发式
+ENABLE_PUNCTUATION_HEURISTIC=true
 ```
 
 ### 运行
@@ -121,14 +131,18 @@ go build -o gemini-antiblock
 
 ## 环境变量配置
 
-| 变量名                         | 默认值                                      | 描述                       |
-| ------------------------------ | ------------------------------------------- | -------------------------- |
-| `UPSTREAM_URL_BASE`            | `https://generativelanguage.googleapis.com` | Gemini API 的基础 URL      |
-| `MAX_CONSECUTIVE_RETRIES`      | `100`                                       | 流中断时的最大连续重试次数 |
-| `DEBUG_MODE`                   | `true`                                      | 是否启用调试日志           |
-| `RETRY_DELAY_MS`               | `750`                                       | 重试间隔时间（毫秒）       |
-| `SWALLOW_THOUGHTS_AFTER_RETRY` | `true`                                      | 重试后是否过滤思考内容     |
-| `PORT`                         | `8080`                                      | 服务器监听端口             |
+| 变量名                         | 默认值                                      | 描述                                                                                      |
+| ------------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `UPSTREAM_URL_BASE`            | `https://generativelanguage.googleapis.com` | Gemini API 的基础 URL                                                                     |
+| `MAX_CONSECUTIVE_RETRIES`      | `100`                                       | 流中断时的最大连续重试次数                                                                |
+| `DEBUG_MODE`                   | `true`                                      | 是否启用调试日志                                                                          |
+| `RETRY_DELAY_MS`               | `750`                                       | 重试间隔时间（毫秒）                                                                      |
+| `SWALLOW_THOUGHTS_AFTER_RETRY` | `true`                                      | 重试后是否过滤思考内容                                                                    |
+| `PORT`                         | `8080`                                      | 服务器监听端口                                                                            |
+| `ENABLE_RATE_LIMIT`            | `false`                                     | 是否启用速率限制                                                                          |
+| `RATE_LIMIT_COUNT`             | `10`                                        | 速率限制请求数                                                                            |
+| `RATE_LIMIT_WINDOW_SECONDS`    | `60`                                        | 速率限制窗口时间（秒）                                                                    |
+| `ENABLE_PUNCTUATION_HEURISTIC` | `true`                                      | 启用实验性的“跨尝试句末标点”启发式，用于在连续 3 次续上尝试都以句末标点结尾时提前判定成功 |
 
 ## 使用方法
 
@@ -295,9 +309,10 @@ docker run -d \
   -p 8080:8080 \
   -e UPSTREAM_URL_BASE=https://generativelanguage.googleapis.com \
   -e MAX_CONSECUTIVE_RETRIES=100 \
-  -e DEBUG_MODE=true \
+  -e DEBUG_MODE=false \
   -e RETRY_DELAY_MS=750 \
   -e SWALLOW_THOUGHTS_AFTER_RETRY=true \
+  -e ENABLE_PUNCTUATION_HEURISTIC=true \
   -e PORT=8080 \
   ghcr.io/davidasx/gemini-antiblock-go:latest
 ```

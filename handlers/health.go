@@ -24,7 +24,7 @@ func HealthHandler(w http.ResponseWriter, r *http.Request) {
 		Status:    "healthy",
 		Timestamp: time.Now().UTC(),
 		Service:   "gemini-antiblock-proxy",
-		Version:   "0.1.0-alpha",
+		Version:   "0.2.0",
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
