@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,10 +20,33 @@ type Config struct {
 	RateLimitCount             int
 	RateLimitWindowSeconds     int
 	EnablePunctuationHeuristic bool
+	GeminiModelMaxTokens       map[string]int
+	TokenLimitExceededCode     int
+	TokenLimitExceededMessage  string
+	NoRetryErrorCodes          []int
 }
 
 // LoadConfig loads configuration from environment variables
 func LoadConfig() *Config {
+	// Parse model max tokens JSON
+	modelMaxTokens := make(map[string]int)
+	if jsonStr := os.Getenv("GEMINI_MODEL_MAX_TOKENS_JSON"); jsonStr != "" {
+		if err := json.Unmarshal([]byte(jsonStr), &modelMaxTokens); err != nil {
+			// Log error but continue with empty map
+		}
+	}
+
+	// Parse no retry error codes
+	var noRetryCodes []int
+	if codesStr := os.Getenv("NO_RETRY_ERROR_CODES"); codesStr != "" {
+		codes := strings.Split(codesStr, ",")
+		for _, codeStr := range codes {
+			if code, err := strconv.Atoi(strings.TrimSpace(codeStr)); err == nil {
+				noRetryCodes = append(noRetryCodes, code)
+			}
+		}
+	}
+
 	return &Config{
 		UpstreamURLBase:            getEnvString("UPSTREAM_URL_BASE", "https://generativelanguage.googleapis.com"),
 		Port:                       getEnvString("PORT", "8080"),
@@ -33,6 +58,10 @@ func LoadConfig() *Config {
 		RateLimitCount:             getEnvInt("RATE_LIMIT_COUNT", 10),
 		RateLimitWindowSeconds:     getEnvInt("RATE_LIMIT_WINDOW_SECONDS", 60),
 		EnablePunctuationHeuristic: getEnvBool("ENABLE_PUNCTUATION_HEURISTIC", true),
+		GeminiModelMaxTokens:       modelMaxTokens,
+		TokenLimitExceededCode:     getEnvInt("TOKEN_LIMIT_EXCEEDED_CODE", 413),
+		TokenLimitExceededMessage:  getEnvString("TOKEN_LIMIT_EXCEEDED_MESSAGE", "Request payload is too large: token count exceeds model limit."),
+		NoRetryErrorCodes:          noRetryCodes,
 	}
 }
 

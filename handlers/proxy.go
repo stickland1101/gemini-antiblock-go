@@ -146,8 +146,33 @@ func (h *ProxyHandler) HandleStreamingPost(w http.ResponseWriter, r *http.Reques
 	logger.LogDebug(fmt.Sprintf("Request body size: %d bytes", len(bodyBytes)))
 
 	if contents, ok := requestBody["contents"].([]interface{}); ok {
+		if len(contents) == 0 {
+			logger.LogError("Request contains empty contents array")
+			JSONError(w, 400, "Request must contain at least one message in contents", "empty_contents")
+			return
+		}
 		logger.LogDebug(fmt.Sprintf("Parsed request body with %d messages", len(contents)))
+	} else {
+		// contents字段不存在或类型错误
+		logger.LogError("Request missing or invalid contents field")
+		JSONError(w, 400, "Request must contain valid contents field", "missing_contents")
+		return
 	}
+
+	// === TOKEN LIMIT CHECK START ===
+	modelName := extractModelFromPath(r.URL.Path)
+	if modelName != "" {
+		if maxTokens, ok := h.Config.GeminiModelMaxTokens[modelName]; ok {
+			estimatedTokens := estimateTokenCount(requestBody)
+			logger.LogDebug(fmt.Sprintf("Model: %s, Max Tokens: %d, Estimated Tokens: %d", modelName, maxTokens, estimatedTokens))
+			if estimatedTokens > maxTokens {
+				logger.LogError(fmt.Sprintf("Token limit exceeded for model %s. Limit: %d, Estimated: %d", modelName, maxTokens, estimatedTokens))
+				JSONError(w, h.Config.TokenLimitExceededCode, h.Config.TokenLimitExceededMessage, "token_limit_exceeded")
+				return
+			}
+		}
+	}
+	// === TOKEN LIMIT CHECK END ===
 
 	// Inject system prompt
 	h.InjectSystemPrompt(requestBody)
@@ -363,4 +388,39 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.HandleNonStreaming(w, r)
+}
+
+// estimateTokenCount estimates the number of tokens in the request.
+// NOTE: This is a simple word-count based estimation and not a precise tokenizer.
+func estimateTokenCount(body map[string]interface{}) int {
+	count := 0
+	if contents, ok := body["contents"].([]interface{}); ok {
+		for _, content := range contents {
+			if contentMap, ok := content.(map[string]interface{}); ok {
+				if parts, ok := contentMap["parts"].([]interface{}); ok {
+					for _, part := range parts {
+						if partMap, ok := part.(map[string]interface{}); ok {
+							if text, ok := partMap["text"].(string); ok {
+								count += len(strings.Fields(text))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return count
+}
+
+// extractModelFromPath extracts the model name from the request URL path.
+// e.g., /v1beta/models/gemini-1.5-pro-latest:generateContent -> gemini-1.5-pro-latest
+func extractModelFromPath(path string) string {
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		if part == "models" && i+1 < len(parts) {
+			modelAndAction := strings.Split(parts[i+1], ":")
+			return modelAndAction[0]
+		}
+	}
+	return ""
 }

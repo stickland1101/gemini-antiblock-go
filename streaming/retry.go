@@ -27,12 +27,59 @@ func endsWithSentencePunctuation(text string) bool {
 	}
 	runes := []rune(trimmed)
 	last := runes[len(runes)-1]
-	const punctuations = "。？！.!?…\"'”’"
+	const punctuations = "。？！.!?…\"'”’》>"
 	return strings.ContainsRune(punctuations, last)
 }
 
+// isValidResponseStructure checks if an SSE data line has valid response structure
+func isValidResponseStructure(line string) bool {
+	if !strings.HasPrefix(line, "data: ") {
+		return true // Non-data lines are considered valid
+	}
+
+	// Extract JSON content from data line
+	idx := strings.Index(line, "{")
+	if idx == -1 {
+		return false // No JSON content found
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(line[idx:]), &data); err != nil {
+		logger.LogDebug("JSON parsing failed during structure validation:", err)
+		return false
+	}
+
+	// Check if candidates field exists and is a valid array
+	candidates, exists := data["candidates"]
+	if !exists {
+		logger.LogDebug("Missing candidates field in response structure")
+		return false
+	}
+
+	candidatesArray, isArray := candidates.([]interface{})
+	if !isArray {
+		logger.LogDebug("Candidates field is not an array")
+		return false
+	}
+
+	if len(candidatesArray) == 0 {
+		logger.LogDebug("Candidates array is empty")
+		return false
+	}
+
+	// Check if first candidate has valid structure
+	if _, ok := candidatesArray[0].(map[string]interface{}); ok {
+		// Basic structure validation - candidate should be a map
+		logger.LogDebug("Response structure validation passed")
+		return true
+	}
+
+	logger.LogDebug("First candidate has invalid structure")
+	return false
+}
+
 // BuildRetryRequestBody builds a new request body for retry with accumulated context
-func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText string) map[string]interface{} {
+func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText string) (map[string]interface{}, error) {
 	logger.LogDebug(fmt.Sprintf("Building retry request body. Accumulated text length: %d", len(accumulatedText)))
 	logger.LogDebug(fmt.Sprintf("Accumulated text preview: %s", func() string {
 		if len(accumulatedText) > 200 {
@@ -48,7 +95,13 @@ func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText 
 
 	contents, ok := retryBody["contents"].([]interface{})
 	if !ok {
-		contents = []interface{}{}
+		logger.LogError("Failed to extract contents from retry body - contents field missing or invalid type")
+		return nil, fmt.Errorf("invalid contents field in retry request")
+	}
+
+	if len(contents) == 0 {
+		logger.LogError("Retry body contains empty contents array")
+		return nil, fmt.Errorf("retry request cannot have empty contents")
 	}
 
 	// Find last user message index
@@ -92,8 +145,25 @@ func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText 
 		logger.LogDebug("Appended retry context to end of conversation")
 	}
 
-	logger.LogDebug(fmt.Sprintf("Final retry request has %d messages", len(retryBody["contents"].([]interface{}))))
-	return retryBody
+	finalContents := retryBody["contents"].([]interface{})
+	if len(finalContents) == 0 {
+		logger.LogError("CRITICAL: Final retry request body has empty contents array")
+		return nil, fmt.Errorf("final retry body validation failed: empty contents")
+	}
+
+	logger.LogDebug(fmt.Sprintf("Final retry request has %d messages", len(finalContents)))
+	// 记录第一条和最后一条消息的基本信息用于调试
+	if len(finalContents) > 0 {
+		if firstMsg, ok := finalContents[0].(map[string]interface{}); ok {
+			logger.LogDebug(fmt.Sprintf("First message role: %v", firstMsg["role"]))
+		}
+		if len(finalContents) > 1 {
+			if lastMsg, ok := finalContents[len(finalContents)-1].(map[string]interface{}); ok {
+				logger.LogDebug(fmt.Sprintf("Last message role: %v", lastMsg["role"]))
+			}
+		}
+	}
+	return retryBody, nil
 }
 
 // ProcessStreamAndRetryInternally handles streaming with internal retry logic
@@ -353,7 +423,24 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 		logger.LogInfo(fmt.Sprintf("=== STARTING RETRY %d/%d ===", consecutiveRetryCount, cfg.MaxConsecutiveRetries))
 
 		// Build retry request
-		retryBody := BuildRetryRequestBody(originalRequestBody, accumulatedText)
+		retryBody, err := BuildRetryRequestBody(originalRequestBody, accumulatedText)
+		if err != nil {
+			logger.LogError("Failed to build retry request body:", err)
+			// 发送错误到客户端而不是继续重试
+			errorPayload := map[string]interface{}{
+				"error": map[string]interface{}{
+					"code":    400,
+					"status":  "INVALID_ARGUMENT",
+					"message": "Failed to build retry request: " + err.Error(),
+				},
+			}
+			errorBytes, _ := json.Marshal(errorPayload)
+			writer.Write([]byte(fmt.Sprintf("event: error\ndata: %s\n\n", string(errorBytes))))
+			if flusher, ok := writer.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return fmt.Errorf("retry request validation failed: %w", err)
+		}
 
 		// Log the retry request body for debugging
 		prettyBodyBytes, _ := json.MarshalIndent(retryBody, "  ", "  ")
