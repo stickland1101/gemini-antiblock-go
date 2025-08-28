@@ -24,10 +24,6 @@ type Config struct {
 	TokenLimitExceededCode     int
 	TokenLimitExceededMessage  string
 	NoRetryErrorCodes          []int
-
-	// Anti-excessive continuation config
-	PromptLengthThreshold int  // Skip [done] check if prompt > threshold
-	DisableDoneTokenCheck bool // Global disable [done] token check
 }
 
 // LoadConfig loads configuration from environment variables
@@ -66,10 +62,6 @@ func LoadConfig() *Config {
 		TokenLimitExceededCode:     getEnvInt("TOKEN_LIMIT_EXCEEDED_CODE", 413),
 		TokenLimitExceededMessage:  getEnvString("TOKEN_LIMIT_EXCEEDED_MESSAGE", "Request payload is too large: token count exceeds model limit."),
 		NoRetryErrorCodes:          noRetryCodes,
-
-		// Anti-excessive continuation config
-		PromptLengthThreshold: getEnvInt("PROMPT_LENGTH_THRESHOLD", 10000),
-		DisableDoneTokenCheck: getEnvBool("DISABLE_DONE_TOKEN_CHECK", false),
 	}
 }
 

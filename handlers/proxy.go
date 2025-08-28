@@ -177,6 +177,12 @@ func (h *ProxyHandler) HandleStreamingPost(w http.ResponseWriter, r *http.Reques
 	// Inject system prompt
 	h.InjectSystemPrompt(requestBody)
 
+	// Log the final request body before sending
+	if logger.IsDebugMode() {
+		debugRequestBodyBytes, _ := json.Marshal(requestBody)
+		logger.LogDebug("Final upstream request body:", string(debugRequestBodyBytes))
+	}
+
 	// Create upstream request
 	modifiedBodyBytes, err := json.Marshal(requestBody)
 	if err != nil {
