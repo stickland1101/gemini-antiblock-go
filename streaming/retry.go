@@ -27,8 +27,99 @@ func endsWithSentencePunctuation(text string) bool {
 	}
 	runes := []rune(trimmed)
 	last := runes[len(runes)-1]
-	const punctuations = "。？！.!?…\"'”’》>"
+	const punctuations = ".!?…\""
 	return strings.ContainsRune(punctuations, last)
+}
+
+// calculatePromptLength calculates total character length of all content in the request
+func calculatePromptLength(requestBody map[string]interface{}) int {
+	totalLength := 0
+
+	// Calculate length from contents
+	if contents, ok := requestBody["contents"].([]interface{}); ok {
+		for _, content := range contents {
+			if contentMap, ok := content.(map[string]interface{}); ok {
+				if parts, ok := contentMap["parts"].([]interface{}); ok {
+					for _, part := range parts {
+						if partMap, ok := part.(map[string]interface{}); ok {
+							if text, ok := partMap["text"].(string); ok {
+								totalLength += len(text)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Calculate length from system instruction if present
+	if systemInstruction, ok := requestBody["systemInstruction"].(map[string]interface{}); ok {
+		if parts, ok := systemInstruction["parts"].([]interface{}); ok {
+			for _, part := range parts {
+				if partMap, ok := part.(map[string]interface{}); ok {
+					if text, ok := partMap["text"].(string); ok {
+						totalLength += len(text)
+					}
+				}
+			}
+		}
+	}
+
+	return totalLength
+}
+
+// hasFormattedOutputIndicators checks if the request contains indicators of structured output
+func hasFormattedOutputIndicators(requestBody map[string]interface{}) bool {
+	formatKeywords := []string{
+		"xml", "json", "html", "yaml", "markdown", "csv", "structured",
+		"format", "schema", "template", "table", "list", "array",
+		"<", ">", "{", "}", "[", "]", "```",
+		"格式化", "结构化", "模板", "表格", "列表", "数组",
+	}
+
+	// Check contents
+	if contents, ok := requestBody["contents"].([]interface{}); ok {
+		for _, content := range contents {
+			if contentMap, ok := content.(map[string]interface{}); ok {
+				if parts, ok := contentMap["parts"].([]interface{}); ok {
+					for _, part := range parts {
+						if partMap, ok := part.(map[string]interface{}); ok {
+							if text, ok := partMap["text"].(string); ok {
+								textLower := strings.ToLower(text)
+								for _, keyword := range formatKeywords {
+									if strings.Contains(textLower, keyword) {
+										logger.LogDebug(fmt.Sprintf("Formatted output indicator detected: '%s'", keyword))
+										return true
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check system instruction
+	if systemInstruction, ok := requestBody["systemInstruction"].(map[string]interface{}); ok {
+		if parts, ok := systemInstruction["parts"].([]interface{}); ok {
+			for _, part := range parts {
+				if partMap, ok := part.(map[string]interface{}); ok {
+					if text, ok := partMap["text"].(string); ok {
+						textLower := strings.ToLower(text)
+						for _, keyword := range formatKeywords {
+							if strings.Contains(textLower, keyword) {
+								logger.LogDebug(fmt.Sprintf("Formatted output indicator detected in system instruction: '%s'", keyword))
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // isValidResponseStructure checks if an SSE data line has valid response structure
@@ -78,6 +169,69 @@ func isValidResponseStructure(line string) bool {
 	return false
 }
 
+// deepCopyRequestBody creates a deep copy of the request body to prevent mutations
+func deepCopyRequestBody(original map[string]interface{}) (map[string]interface{}, error) {
+	// Use JSON marshal/unmarshal for deep copy
+	jsonBytes, err := json.Marshal(original)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal original body for deep copy: %w", err)
+	}
+
+	var copy map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &copy); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal copy: %w", err)
+	}
+
+	return copy, nil
+}
+
+// validateRetryRequestStructure performs comprehensive validation of retry request structure
+func validateRetryRequestStructure(body map[string]interface{}) error {
+	// Check contents field
+	contentsVal, exists := body["contents"]
+	if !exists {
+		return fmt.Errorf("retry request missing contents field")
+	}
+
+	contents, isArray := contentsVal.([]interface{})
+	if !isArray {
+		return fmt.Errorf("retry request contents field must be array, got %T", contentsVal)
+	}
+
+	if len(contents) == 0 {
+		return fmt.Errorf("retry request contents array cannot be empty")
+	}
+
+	// Validate each message has required structure
+	for i, content := range contents {
+		contentMap, isMap := content.(map[string]interface{})
+		if !isMap {
+			return fmt.Errorf("retry request contents[%d] must be object, got %T", i, content)
+		}
+
+		// Check for required fields
+		if _, hasRole := contentMap["role"]; !hasRole {
+			return fmt.Errorf("retry request contents[%d] missing role field", i)
+		}
+
+		partsVal, hasParts := contentMap["parts"]
+		if !hasParts {
+			return fmt.Errorf("retry request contents[%d] missing parts field", i)
+		}
+
+		parts, isPartsArray := partsVal.([]interface{})
+		if !isPartsArray {
+			return fmt.Errorf("retry request contents[%d].parts must be array, got %T", i, partsVal)
+		}
+
+		if len(parts) == 0 {
+			return fmt.Errorf("retry request contents[%d].parts cannot be empty", i)
+		}
+	}
+
+	return nil
+}
+
 // BuildRetryRequestBody builds a new request body for retry with accumulated context
 func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText string) (map[string]interface{}, error) {
 	logger.LogDebug(fmt.Sprintf("Building retry request body. Accumulated text length: %d", len(accumulatedText)))
@@ -88,21 +242,21 @@ func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText 
 		return accumulatedText
 	}()))
 
-	retryBody := make(map[string]interface{})
-	for k, v := range originalBody {
-		retryBody[k] = v
+	// Create deep copy to prevent mutations to original
+	retryBody, err := deepCopyRequestBody(originalBody)
+	if err != nil {
+		logger.LogError("Failed to create deep copy of original request:", err)
+		return nil, fmt.Errorf("deep copy failed: %w", err)
 	}
 
-	contents, ok := retryBody["contents"].([]interface{})
-	if !ok {
-		logger.LogError("Failed to extract contents from retry body - contents field missing or invalid type")
-		return nil, fmt.Errorf("invalid contents field in retry request")
+	// Validate the copied structure before proceeding
+	if err := validateRetryRequestStructure(retryBody); err != nil {
+		logger.LogError("Original request structure validation failed:", err)
+		return nil, fmt.Errorf("invalid original request structure: %w", err)
 	}
 
-	if len(contents) == 0 {
-		logger.LogError("Retry body contains empty contents array")
-		return nil, fmt.Errorf("retry request cannot have empty contents")
-	}
+	contents := retryBody["contents"].([]interface{})
+	logger.LogDebug(fmt.Sprintf("Original request has %d messages", len(contents)))
 
 	// Find last user message index
 	lastUserIndex := -1
@@ -179,6 +333,31 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 	// Counts consecutive resume attempts (after at least one retry) whose last formal text ends with sentence punctuation
 	resumePunctStreak := 0
 
+	// Create backup of original request body for emergency recovery
+	requestBodyBackup, err := deepCopyRequestBody(originalRequestBody)
+	if err != nil {
+		logger.LogError("Failed to create request body backup:", err)
+		return fmt.Errorf("initialization failed: cannot create request backup: %w", err)
+	}
+	logger.LogDebug("Created backup of original request body for emergency recovery")
+
+	// Check anti-excessive continuation conditions
+	promptLength := calculatePromptLength(originalRequestBody)
+	hasFormattedIndicators := hasFormattedOutputIndicators(originalRequestBody)
+	skipDoneTokenCheck := cfg.DisableDoneTokenCheck ||
+		promptLength > cfg.PromptLengthThreshold ||
+		hasFormattedIndicators
+
+	if skipDoneTokenCheck {
+		if cfg.DisableDoneTokenCheck {
+			logger.LogInfo("Done token check globally disabled")
+		} else if promptLength > cfg.PromptLengthThreshold {
+			logger.LogInfo(fmt.Sprintf("Prompt length (%d chars) exceeds threshold (%d), skipping [done] token check", promptLength, cfg.PromptLengthThreshold))
+		} else if hasFormattedIndicators {
+			logger.LogInfo("Formatted output indicators detected, skipping [done] token check")
+		}
+	}
+
 	// Get maxOutputTokens from client request, with a default fallback
 	maxOutputChars := 65535 // Default value
 	if genConfig, ok := originalRequestBody["generationConfig"].(map[string]interface{}); ok {
@@ -188,7 +367,7 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 		}
 	}
 
-	logger.LogInfo(fmt.Sprintf("Starting stream processing session. Max retries: %d", cfg.MaxConsecutiveRetries))
+	logger.LogInfo(fmt.Sprintf("Starting stream processing session. Max retries: %d, Skip done check: %t", cfg.MaxConsecutiveRetries, skipDoneTokenCheck))
 
 	for {
 		interruptionReason := ""
@@ -269,12 +448,14 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 					logger.LogError("Finish reason 'STOP' with no text content detected. This indicates an empty response. Triggering retry.")
 					interruptionReason = "FINISH_EMPTY_RESPONSE"
 					needsRetry = true
-				} else if !strings.HasSuffix(trimmedText, "[done]") {
+				} else if !skipDoneTokenCheck && !strings.HasSuffix(trimmedText, "[done]") {
 					runes := []rune(trimmedText)
 					lastChar := string(runes[len(runes)-1])
 					logger.LogError(fmt.Sprintf("Finish reason 'STOP' treated as incomplete because text ends with '%s'. Triggering retry.", lastChar))
 					interruptionReason = "FINISH_INCOMPLETE"
 					needsRetry = true
+				} else if skipDoneTokenCheck {
+					logger.LogDebug("Accepting STOP as complete due to anti-excessive continuation rules")
 				}
 			} else if finishReason != "" && finishReason != "MAX_TOKENS" && finishReason != "STOP" {
 				logger.LogError(fmt.Sprintf("Abnormal finish reason: %s. Triggering retry.", finishReason))
@@ -422,24 +603,34 @@ func ProcessStreamAndRetryInternally(cfg *config.Config, initialReader io.Reader
 		consecutiveRetryCount++
 		logger.LogInfo(fmt.Sprintf("=== STARTING RETRY %d/%d ===", consecutiveRetryCount, cfg.MaxConsecutiveRetries))
 
-		// Build retry request
+		// Build retry request with fallback to backup
 		retryBody, err := BuildRetryRequestBody(originalRequestBody, accumulatedText)
 		if err != nil {
-			logger.LogError("Failed to build retry request body:", err)
-			// 发送错误到客户端而不是继续重试
-			errorPayload := map[string]interface{}{
-				"error": map[string]interface{}{
-					"code":    400,
-					"status":  "INVALID_ARGUMENT",
-					"message": "Failed to build retry request: " + err.Error(),
-				},
+			logger.LogError("Primary retry request build failed:", err)
+			logger.LogInfo("Attempting retry with backup request body")
+
+			// Try with backup request body as fallback
+			backupRetryBody, backupErr := BuildRetryRequestBody(requestBodyBackup, accumulatedText)
+			if backupErr != nil {
+				logger.LogError("Backup retry request build also failed:", backupErr)
+				// 发送错误到客户端而不是继续重试
+				errorPayload := map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":    400,
+						"status":  "INVALID_ARGUMENT",
+						"message": "Failed to build retry request (both primary and backup failed): " + err.Error(),
+					},
+				}
+				errorBytes, _ := json.Marshal(errorPayload)
+				writer.Write([]byte(fmt.Sprintf("event: error\ndata: %s\n\n", string(errorBytes))))
+				if flusher, ok := writer.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				return fmt.Errorf("retry request validation failed (primary: %v, backup: %v)", err, backupErr)
+			} else {
+				logger.LogInfo("Successfully recovered using backup request body")
+				retryBody = backupRetryBody
 			}
-			errorBytes, _ := json.Marshal(errorPayload)
-			writer.Write([]byte(fmt.Sprintf("event: error\ndata: %s\n\n", string(errorBytes))))
-			if flusher, ok := writer.(http.Flusher); ok {
-				flusher.Flush()
-			}
-			return fmt.Errorf("retry request validation failed: %w", err)
 		}
 
 		// Log the retry request body for debugging
