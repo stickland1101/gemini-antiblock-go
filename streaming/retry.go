@@ -172,17 +172,6 @@ func BuildRetryRequestBody(originalBody map[string]interface{}, accumulatedText 
 			}
 		}
 	}
-
-	// Final validation and logging before returning
-	if _, ok := retryBody["contents"]; !ok {
-		logger.LogError("CRITICAL: 'contents' field is missing from the final retry body")
-		return nil, fmt.Errorf("final retry body validation failed: 'contents' field missing")
-	}
-	if logger.IsDebugMode() {
-		debugRetryBodyBytes, _ := json.Marshal(retryBody)
-		logger.LogDebug("Final retry request body:", string(debugRetryBodyBytes))
-	}
-
 	return retryBody, nil
 }
 
